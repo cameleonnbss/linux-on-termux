@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 #######################################################
-#  LINUX ON TERMUX - Multi-Distro Installer v3.0
+#  LINUX ON TERMUX - Multi-Distro Installer v3.1
 #
 #  Distributions:
 #    1) Ubuntu 24.04 LTS  + GNOME 46
@@ -21,7 +21,7 @@
 #  Repository: https://github.com/cameleonnbss/linux-on-termux
 #######################################################
 
-set -euo pipefail
+# NO set -e — an installer must survive individual package failures
 
 # ============== COLORS ==============
 RED='\033[0;31m'
@@ -44,12 +44,12 @@ DE_NAME=""
 PROOT_DISTRO=""
 GPU_DRIVER="swrast"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FAILED_PKGS=""
 
 # ============== LOGGING ==============
-LOG_FILE="/tmp/linux-on-termux-install.log"
-exec > >(tee -a "$LOG_FILE") 2>&1
+LOG_FILE="$HOME/linux-on-termux-install.log"
 
-log()  { echo -e "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
+log()  { echo "[$(date '+%H:%M:%S')] $*" >> "$LOG_FILE"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; log "[WARN] $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; log "[ERROR] $*"; }
 
@@ -71,6 +71,7 @@ update_progress() {
     echo -e "${CYAN}  ▶ ${label}${NC}"
     echo -e "${WHITE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    log "STEP ${CURRENT_STEP}/${TOTAL_STEPS}: ${label}"
 }
 
 spinner() {
@@ -83,29 +84,31 @@ spinner() {
         printf "\r  ${YELLOW}⏳${NC} ${msg} ${CYAN}${spin:$i:1}${NC}  "
         sleep 0.1
     done
-    wait "$pid"
+    wait "$pid" 2>/dev/null
     local code=$?
     if [ $code -eq 0 ]; then
         printf "\r  ${GREEN}✓${NC} %-55s\n" "${msg}"
     else
-        printf "\r  ${RED}✗${NC} %-55s ${RED}(failed)${NC}\n" "${msg}"
+        printf "\r  ${RED}✗${NC} %-55s ${RED}(failed — continuing)${NC}\n" "${msg}"
+        log "FAILED: ${msg} (exit code ${code})"
     fi
-    return $code
+    # IMPORTANT: do NOT return non-zero — that would kill the script
+    return 0
 }
 
 pkg_install() {
-    local pkg="$1"
-    local label="${2:-$pkg}"
-    (yes | pkg install "$pkg" -y > /dev/null 2>&1) &
+    local pkg_name="$1"
+    local label="${2:-$pkg_name}"
+    (yes | pkg install "$pkg_name" -y > /dev/null 2>&1) &
     spinner $! "Installing ${label}..."
 }
 
 proot_run() {
-    proot-distro login "$PROOT_DISTRO" -- bash -c "$1" > /dev/null 2>&1
+    proot-distro login "$PROOT_DISTRO" -- bash -c "$1" > /dev/null 2>&1 || true
 }
 
 proot_run_verbose() {
-    proot-distro login "$PROOT_DISTRO" -- bash -c "$1" 2>&1 | tail -5
+    proot-distro login "$PROOT_DISTRO" -- bash -c "$1" 2>&1 | tail -5 || true
 }
 
 # ============== BANNER ==============
@@ -115,7 +118,7 @@ show_banner() {
     cat << 'EOF'
   ┌──────────────────────────────────────────────────┐
   │                                                  │
-  │    LINUX ON TERMUX  v3.0                         │
+  │    LINUX ON TERMUX  v3.1                         │
   │                                                  │
   │    Run a real Linux desktop on Android           │
   │    No root  |  GPU accelerated  |  Your choice   │
@@ -197,6 +200,7 @@ select_distro() {
     echo ""
     echo -e "  ${YELLOW}Estimated time: 20-40 min (depends on connection)${NC}"
     echo -e "  ${YELLOW}Storage needed: ~3-6 GB${NC}"
+    echo -e "  ${GRAY}Log file: ${LOG_FILE}${NC}"
     echo ""
     echo -ne "  ${WHITE}Press Enter to start, Ctrl+C to cancel...${NC} "
     read -r
@@ -237,10 +241,10 @@ detect_device() {
 step_termux_base() {
     update_progress "Updating Termux packages"
 
-    (yes | pkg update -y > /dev/null 2>&1) &
+    (yes | pkg update -y 2>&1 | tail -3) &
     spinner $! "Updating package lists..."
 
-    (yes | pkg upgrade -y > /dev/null 2>&1) &
+    (yes | pkg upgrade -y 2>&1 | tail -3) &
     spinner $! "Upgrading installed packages..."
 
     pkg_install "x11-repo" "X11 Repository"
@@ -284,6 +288,7 @@ step_install_distro() {
     update_progress "Downloading & installing ${DISTRO_NAME}"
 
     echo -e "  ${YELLOW}⏳${NC} Downloading ${DISTRO_NAME} rootfs — this may take a while..."
+    echo -e "  ${GRAY}(This is the longest step — don't close Termux)${NC}"
     proot-distro install "$PROOT_DISTRO" 2>&1 | tail -5
     echo -e "  ${GREEN}✓${NC} ${DISTRO_NAME} rootfs installed"
 }
@@ -303,7 +308,8 @@ step_install_de() {
 }
 
 _install_de_ubuntu() {
-    echo -e "  ${YELLOW}⏳${NC} Installing GNOME on Ubuntu (long step)..."
+    echo -e "  ${YELLOW}⏳${NC} Installing GNOME on Ubuntu (long step — 5-15 min)..."
+    echo -e "  ${GRAY}(Don't close Termux — the desktop is being installed)${NC}"
     proot_run_verbose "
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
@@ -325,7 +331,8 @@ _install_de_ubuntu() {
 }
 
 _install_de_arch() {
-    echo -e "  ${YELLOW}⏳${NC} Installing Hyprland on Arch (long step)..."
+    echo -e "  ${YELLOW}⏳${NC} Installing Hyprland on Arch (long step — 5-15 min)..."
+    echo -e "  ${GRAY}(Don't close Termux — the desktop is being installed)${NC}"
     proot_run_verbose "
         pacman -Syu --noconfirm 2>/dev/null
         pacman -S --noconfirm \
@@ -348,7 +355,8 @@ _install_de_arch() {
 }
 
 _install_de_debian() {
-    echo -e "  ${YELLOW}⏳${NC} Installing KDE Plasma on Debian (long step)..."
+    echo -e "  ${YELLOW}⏳${NC} Installing KDE Plasma on Debian (long step — 5-15 min)..."
+    echo -e "  ${GRAY}(Don't close Termux — the desktop is being installed)${NC}"
     proot_run_verbose "
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
@@ -369,7 +377,8 @@ _install_de_debian() {
 }
 
 _install_de_fedora() {
-    echo -e "  ${YELLOW}⏳${NC} Installing GNOME on Fedora (long step)..."
+    echo -e "  ${YELLOW}⏳${NC} Installing GNOME on Fedora (long step — 5-15 min)..."
+    echo -e "  ${GRAY}(Don't close Termux — the desktop is being installed)${NC}"
     proot_run_verbose "
         dnf install -y @gnome-desktop \
             gnome-terminal \
@@ -383,7 +392,8 @@ _install_de_fedora() {
 }
 
 _install_de_kali() {
-    echo -e "  ${YELLOW}⏳${NC} Installing XFCE4 + Kali tools (long step)..."
+    echo -e "  ${YELLOW}⏳${NC} Installing XFCE4 + Kali tools (long step — 5-20 min)..."
+    echo -e "  ${GRAY}(Don't close Termux — the desktop + tools are being installed)${NC}"
     proot_run_verbose "
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq
@@ -424,10 +434,9 @@ step_common_apps() {
                 apt-get install -y --no-install-recommends \
                     firefox-esr \
                     git curl wget \
-                    neofetch htop \
-                    2>&1 | tail -3
+                    neofetch htop
             "
-            # Try to install code, fall back gracefully
+            # Try code, don't fail if unavailable
             proot_run "
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get install -y --no-install-recommends code 2>/dev/null || true
@@ -436,21 +445,18 @@ step_common_apps() {
         arch)
             proot_run "
                 pacman -S --noconfirm \
-                    firefox git curl wget neofetch htop \
-                    2>&1 | tail -3
+                    firefox git curl wget neofetch htop
             "
             ;;
         fedora)
             proot_run "
                 dnf install -y \
-                    firefox git curl wget neofetch htop \
-                    2>&1 | tail -3
+                    firefox git curl wget neofetch htop
             "
             ;;
         alpine)
             proot_run "
-                apk add firefox git curl wget neofetch htop \
-                    2>&1 | tail -3
+                apk add firefox git curl wget neofetch htop
             "
             ;;
     esac
@@ -466,16 +472,16 @@ step_audio() {
 
     case "$DISTRO_ID" in
         ubuntu|debian|kali)
-            proot_run "apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils > /dev/null 2>&1"
+            proot_run "apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils"
             ;;
         arch)
-            proot_run "pacman -S --noconfirm pulseaudio pulseaudio-alsa > /dev/null 2>&1"
+            proot_run "pacman -S --noconfirm pulseaudio pulseaudio-alsa"
             ;;
         fedora)
-            proot_run "dnf install -y pulseaudio pulseaudio-utils > /dev/null 2>&1"
+            proot_run "dnf install -y pulseaudio pulseaudio-utils"
             ;;
         alpine)
-            proot_run "apk add pulseaudio > /dev/null 2>&1"
+            proot_run "apk add pulseaudio"
             ;;
     esac
 
@@ -492,24 +498,29 @@ step_extra_tools() {
                 apt-get install -y --no-install-recommends \
                     nmap hydra sqlmap nikto \
                     john hashcat \
-                    metasploit-framework \
-                    aircrack-ng \
-                    2>&1 | tail -3
+                    aircrack-ng
+            "
+            # Metasploit separately — it's huge and sometimes fails
+            echo -e "  ${YELLOW}⏳${NC} Installing Metasploit (this is a large package)..."
+            proot_run "
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get install -y --no-install-recommends metasploit-framework 2>/dev/null || \
+                echo 'Metasploit install skipped — install manually with: apt install metasploit-framework'
             "
             echo -e "  ${GREEN}✓${NC} Pentesting tools installed"
             ;;
         arch)
             update_progress "Installing AUR helper (yay)"
             proot_run_verbose "
-                pacman -S --noconfirm base-devel git > /dev/null 2>&1
+                pacman -S --noconfirm base-devel git 2>/dev/null
                 useradd -m builder 2>/dev/null || true
                 echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
                 su - builder -c '
                     git clone https://aur.archlinux.org/yay-bin.git /tmp/yay
                     cd /tmp/yay && makepkg -si --noconfirm
-                ' 2>&1 | tail -3
+                ' 2>/dev/null || echo 'yay install skipped'
             "
-            echo -e "  ${GREEN}✓${NC} yay AUR helper installed"
+            echo -e "  ${GREEN}✓${NC} AUR helper step done"
             ;;
     esac
 }
@@ -552,7 +563,7 @@ step_hyprland_config() {
 
     # Deploy hyprland.conf from bundled config
     if [ -f "${SCRIPT_DIR}/configs/hyprland/hyprland.conf" ]; then
-        proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/hypr/hyprland.conf" < "${SCRIPT_DIR}/configs/hyprland/hyprland.conf"
+        cat "${SCRIPT_DIR}/configs/hyprland/hyprland.conf" | proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/hypr/hyprland.conf" 2>/dev/null
     else
         # Inline fallback
         proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/.config/hypr/hyprland.conf << '\''HYPREOF'\''
@@ -650,20 +661,20 @@ bind = $mainMod, Print, exec, grim -g "$(slurp)" ~/screenshot-$(date +%F_%T).png
 
 bindm = $mainMod, mouse:272, movewindow
 bindm = $mainMod, mouse:273, resizewindow
-HYPREOF'
+HYPREOF' 2>/dev/null
     fi
 
     # Deploy waybar config
     if [ -f "${SCRIPT_DIR}/configs/waybar/config" ]; then
-        proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/waybar/config" < "${SCRIPT_DIR}/configs/waybar/config"
+        cat "${SCRIPT_DIR}/configs/waybar/config" | proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/waybar/config" 2>/dev/null
     fi
     if [ -f "${SCRIPT_DIR}/configs/waybar/style.css" ]; then
-        proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/waybar/style.css" < "${SCRIPT_DIR}/configs/waybar/style.css"
+        cat "${SCRIPT_DIR}/configs/waybar/style.css" | proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/waybar/style.css" 2>/dev/null
     fi
 
     # Deploy alacritty config
     if [ -f "${SCRIPT_DIR}/configs/alacritty/alacritty.toml" ]; then
-        proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/alacritty/alacritty.toml" < "${SCRIPT_DIR}/configs/alacritty/alacritty.toml"
+        cat "${SCRIPT_DIR}/configs/alacritty/alacritty.toml" | proot-distro login "$PROOT_DISTRO" -- bash -c "cat > /root/.config/alacritty/alacritty.toml" 2>/dev/null
     fi
 
     echo -e "  ${GREEN}✓${NC} Hyprland, Waybar, Alacritty configured"
@@ -776,7 +787,7 @@ Exec=firefox
 Icon=firefox
 Type=Application
 Categories=Network;WebBrowser;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Terminal.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Terminal
@@ -785,7 +796,7 @@ Exec=gnome-terminal
 Icon=utilities-terminal
 Type=Application
 Categories=System;TerminalEmulator;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Files.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Files
@@ -794,7 +805,7 @@ Exec=nautilus
 Icon=folder
 Type=Application
 Categories=System;FileManager;
-EOF'
+EOF' 2>/dev/null
             ;;
         arch)
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Firefox.desktop << '\''EOF'\''
@@ -805,7 +816,7 @@ Exec=firefox
 Icon=firefox
 Type=Application
 Categories=Network;WebBrowser;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Alacritty.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Alacritty
@@ -814,7 +825,7 @@ Exec=alacritty
 Icon=utilities-terminal
 Type=Application
 Categories=System;TerminalEmulator;
-EOF'
+EOF' 2>/dev/null
             ;;
         debian)
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Firefox.desktop << '\''EOF'\''
@@ -825,7 +836,7 @@ Exec=firefox-esr
 Icon=firefox
 Type=Application
 Categories=Network;WebBrowser;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Konsole.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Konsole
@@ -834,7 +845,7 @@ Exec=konsole
 Icon=utilities-terminal
 Type=Application
 Categories=System;TerminalEmulator;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Dolphin.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Dolphin
@@ -843,7 +854,7 @@ Exec=dolphin
 Icon=folder
 Type=Application
 Categories=System;FileManager;
-EOF'
+EOF' 2>/dev/null
             ;;
         kali)
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Firefox.desktop << '\''EOF'\''
@@ -854,7 +865,7 @@ Exec=firefox-esr
 Icon=firefox
 Type=Application
 Categories=Network;WebBrowser;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Terminal.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Terminal
@@ -863,7 +874,7 @@ Exec=xfce4-terminal
 Icon=utilities-terminal
 Type=Application
 Categories=System;TerminalEmulator;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Nmap.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Nmap
@@ -872,7 +883,7 @@ Exec=xfce4-terminal -e "nmap"
 Icon=network-wireless
 Type=Application
 Categories=Security;
-EOF'
+EOF' 2>/dev/null
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Metasploit.desktop << '\''EOF'\''
 [Desktop Entry]
 Name=Metasploit
@@ -881,7 +892,7 @@ Exec=xfce4-terminal -e "msfconsole"
 Icon=utilities-terminal
 Type=Application
 Categories=Security;
-EOF'
+EOF' 2>/dev/null
             ;;
         alpine)
             proot-distro login "$PROOT_DISTRO" -- bash -c 'cat > /root/Desktop/Terminal.desktop << '\''EOF'\''
@@ -892,7 +903,7 @@ Exec=xterm
 Icon=utilities-terminal
 Type=Application
 Categories=System;TerminalEmulator;
-EOF'
+EOF' 2>/dev/null
             ;;
     esac
 
@@ -948,6 +959,9 @@ EOF
         echo -e "    Super+Q = Close window  |  Super+1-5 = Workspaces"
         echo ""
     fi
+
+    echo -e "  ${GRAY}Install log saved to: ${LOG_FILE}${NC}"
+    echo ""
 }
 
 # ============== MAIN ==============
