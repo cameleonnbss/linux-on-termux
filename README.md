@@ -15,12 +15,6 @@ Based on [termux-hacklab](https://github.com/jarvesusaram99/termux-hacklab) by T
 Open **Termux** and paste:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/cameleonnbss/linux-on-termux/main/install.sh | bash
-```
-
-Or clone and run locally:
-
-```bash
 git clone https://github.com/cameleonnbss/linux-on-termux
 cd linux-on-termux
 bash install.sh
